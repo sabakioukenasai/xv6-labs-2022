@@ -1,0 +1,50 @@
+#include "kernel/types.h"
+#include "user.h"
+
+int main(int argc, char *argv[]) {
+  	char instrut[512];	// 储存指令
+  	char *argvs[512];	// 储存参数, 每个指针储存一行参数
+  	char buf[512];	// 缓冲区
+  	int idx = 0;		// 参数指针
+	
+	if (argc == 1) {	// 如果没有指定指令，则打印所有参数
+  		strcpy(instrut, "echo");
+  	}
+  	else {		// 否则，设置为第一个参数
+   		strcpy(instrut, argv[1]);
+  	}
+
+  	// 设置初始参数
+  	int len = 0;		// 读入参数的长度
+  	for (int i = 2; i < argc; ++i) {
+    		len += (strlen(argv[i]) + 1);
+  	}
+  	if (len > 0) {
+  		argvs[0] = malloc(len * sizeof(char));
+		char *p = argvs[0];
+		for (int i = 0; i < argc; ++i) {
+			strcpy(p, argv[i]);
+			p += strlen(argv[i]);
+			*p++ = ' ';		// 每个参数使用' '连接
+		}
+		*(argvs[0] + len) = '\0';	// 末尾添加\0
+		++idx;
+  	}
+
+  	while((len = read(0, buf, sizeof(buf))) != 0) {
+		printf("%s\n", buf);
+    		char *begin = buf;
+    		while ((begin - buf) < len && *begin == ' ') {
+    			++begin;		// 跳过行首的空格
+			--len;			// 不计入字符串长度
+    		}
+		argvs[idx] = malloc(len * sizeof(char));
+		// char *p = argvs[idx];
+		
+  	}
+
+	for (int i = 0; i < idx; ++i){
+		free(argvs[i]);			// 释放所有内存
+	}
+  	exit(0);
+}

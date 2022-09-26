@@ -37,6 +37,7 @@ OBJS = \
   $K/plic.o \
   $K/virtio_disk.o \
 
+
 ifeq ($(LAB),pgtbl)
 OBJS += $K/vmcopyin.o
 endif
@@ -149,6 +150,11 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_primes\
+	$U/_find\
+	$U/_xargs\
 
 ifeq ($(LAB),syscall)
 UPROGS += \

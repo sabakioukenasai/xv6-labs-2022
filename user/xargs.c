@@ -1,87 +1,112 @@
 #include <stddef.h>
 #include "kernel/types.h"
 #include "kernel/stat.h"
-#include "kernel/fs.h"
 #include "user/user.h"
 
 #define MAXLINE 128		// 每行最多输入128个字符
 #define MAXARGV 64		// 最多接收64个参数
-#define MAXEXEV 64		// 最多调用指令64次
-#define MAXNAME 64		// 指令最大长度为64
 
-char instruct[MAXNAME];		// 储存指令
-char *argvs[MAXEXEV][MAXARGV];	// 储存参数, 每个指针储存一行参数
-char line[MAXLINE];		// 行缓冲区，读入每行
+static char *argvs[MAXARGV];	// 储存参数, 最多储存64个参数
+static char line[MAXLINE];	// 行缓冲区，读入每行
+static char *freebuf[MAXARGV];	// 记录每次malloc申请内存的首地址，方便回收
+static char *buf;		// 用于处理当前行输入的字符指针
+static size_t bufcnt = 0;	// 记录总共使用malloc分配了多少块buf
+static size_t argvsc  = 0;	// 记录最终执行时的参数个数
+static int  st;			// 退出xargs时的变量，为0表示执行xargs成功
 
-/**
- * Parse the command line and build the argv array
- * */
-void parseline(char *buf, char **argv) {
-	printf("buf points to %p\n", buf);
-	char *delim;
-	int argc = 0;
+int parseline(void) {
 	char *bufend = buf + strlen(buf);
 	
-	// replace trailing '\n' with space
-	buf[strlen(buf) - 1] = ' ';
+	// replace trailing '\0' with space
+	*bufend = ' ';
 	
-	// skipping the leading spaces
-	for ( ; buf != bufend && *buf == ' '; ++buf)
+	// skipping the leading spaces and leading empty line
+	for ( ; buf != bufend && (*buf == ' ' || *buf == '\n'); ++buf)
 		;
 
-	while((delim = strchr(buf, ' ')) != NULL) {
-		argv[++argc] = buf;
+	char *delim = buf;
+	while( buf < bufend) {
+		while(delim < bufend  && *delim != ' ' && *delim != '\n')
+			++delim;
+		argvs[argvsc++] = buf;
 		*delim = '\0';
-		for (buf = delim + 1; buf != bufend && *buf == ' '; ++buf)
-			;
+		for (buf = delim + 1; buf < bufend && (*buf == ' ' || *buf == '\n'); ++buf)
+			;			// 跳过空格和空行
+		if (argvsc == MAXARGV) {
+			/*
+			 * 如果储存的参数个数已经打到
+			 * 最大能储存的参数个数，
+			 * 设置st为-1，返回-1表示失败
+			 */
+			printf("xargs: Too much argument!\n");
+			st = -1;
+			return -1;
+		}
 	}
-	argv[argc + 1] = NULL;		// 参数列表以NULL结尾
-	return;
+	return 0;
 }
 
 int main(int argc, char *argv[]) {	
-  	int calltimes = 0;		// 调用函数次数
+	st = 0;
+	if (argc == 1) {
+		/* 如果没有指定指令，也没有指定初始参数，则执行echo指令 */
+		argvs[0] = malloc(5 * sizeof(char));
+  		memcpy(argvs[0], "echo", 5);
+		freebuf[bufcnt++] = argvs[0];
+		++argvsc;
+	}
+
+	for (int i = 1; i < argc; ++i) {	// 移入初始字符串
+		argvs[argvsc++] = argv[i];
+	}
+
+	int readlen = 0;		// 从标准输入读取到的字节数
+  	while( (readlen = read(0, line, MAXLINE)) != 0 && *line != -1) {
+		/* 每次从标准输入读入一块字符串。
+		 * 需要注意的是，在管道语句中，
+		 * 每次读入的字符串可以会使用
+		 * 换行符作为参数间的分隔符 */
+		if (readlen == MAXLINE && line[MAXLINE - 1] != '\0') {
+			/* 我们需要提醒用户可能发生的截断 */
+			printf("xargs: Lines with more than 128 chars might be truncted!\n");
+			st = -1;
+			/* 
+			 * 设置退出状态，释放内存
+			 * */
+			goto FREEBUF;
+		}
+		if (readlen == 1 && line[0] == '\n')
+			/* 跳过只含有'\n'的空行 */
+			continue;
+
+		freebuf[bufcnt++] = buf = (char *)malloc( readlen * sizeof(char));
+		memcpy(buf, line, readlen);
+		*(buf + readlen - 1) = '\0';
+		if (parseline() < 0)
+			goto FREEBUF;
+  	}
+	argvs[argvsc] = NULL;
 	
-	if (argc == 1) {		// 如果没有指定指令，也没有指定初始参数，则执行echo指令
-  		memmove(instruct, "echo", 5);
-  	}
-  	else {				// 否则，设置argv[1]为待执行指令
-   		memmove(instruct, argv[1], strlen(argv[1]));
-  		// 转移初始参数到argvs中
-  		for (int i = 2; i < argc; ++i) {
-			strcpy(argvs[calltimes][i - 1], argv[i]);
-  		}
-  	}
-
-  	while( read(0, line, sizeof(line)) != 0 && *line != -1) {	// 每次从标准输入读入一行
-		char *buf = (char *)malloc(strlen(line) * sizeof(char));// 申请与输入同等大小的缓冲区
-		strcpy(buf, line);
-		printf("buf points to %p, line points to %p\n", buf, line);
-		parseline(buf, argvs[++calltimes]);
-		strcpy(argvs[calltimes][0], instruct);			// 将argv[0]设置为待执行的指令
-  	}
-
-	printf("here\n");
-
-	for (int i = 0; i < calltimes; ++i) {
-		int pid = fork();
-		if (pid < 0) {
+	// 执行程序
+	switch(fork()) {
+		case -1: 
 			printf("xargs: fork error!\n");
-		}
-		else if (fork() == 0) {
-			if (exec(instruct, argvs[i]) < 0) {	// 在子进程直接调用exec执行目标指令
-				printf("xargv: fail to execute %s\n", instruct);
-				exit(-1);			// 子进程非正常终止
+			st = -1;
+			goto FREEBUF;
+		case 0:
+			if (exec(argvs[0], argvs) < 0) {
+				printf("xargs: fail to execute %s\n", argvs[0]);
+				st = -1;
+				goto FREEBUF;
 			}
-		}
+		default:
+			wait(0);	
 	}
 
-	for (int i = 0; i < calltimes; ++i){
-		char **argv = argvs[i];
-		while(*argv) {
-			free(*argv);
-			++argv;
-		}
+FREEBUF:
+	for (int i = 0; i < bufcnt; ++i){
+		free(freebuf[i]);
+		freebuf[i] = NULL;
 	}
-  	exit(0);
+  	exit(st);
 }
